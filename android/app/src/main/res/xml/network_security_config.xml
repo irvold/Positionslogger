@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Til test er cleartext (http://) tilladt, så du kan ramme http://<pc-ip>:8000 på WiFi.
+  I produktion kører du over internettet med HTTPS (Tailscale/Cloudflare Tunnel) -
+  sæt da cleartextTrafficPermitted="false" nedenfor.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

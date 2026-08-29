@@ -1,0 +1,26 @@
+# Python
+**/__pycache__/
+*.py[cod]
+server/.venv/
+.venv/
+*.db
+*.db-wal
+*.db-shm
+
+# Android / Gradle
+android/.gradle/
+android/.kotlin/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.iml
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# lokale test-artefakter
+server/*.log
+*.test-token.txt

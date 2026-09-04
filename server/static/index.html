@@ -32,6 +32,10 @@
     position: absolute; z-index: 1000; top: 10px; right: 10px; width: auto;
     padding: 6px 10px; background: Canvas; border: 1px solid #8886; border-radius: 6px;
   }
+  #dayNav { display: none; align-items: center; gap: 6px; margin-top: 6px; }
+  #dayNav button { width: auto; padding: 6px 10px; margin-top: 0; }
+  #dayNav button:disabled { opacity: 0.35; cursor: default; }
+  #dayNav input[type=date] { flex: 1; padding: 6px; color-scheme: light dark; }
   @media (max-width: 700px) {
     #app { flex-direction: column; }
     #side { width: 100%; height: 45%; border-left: none; border-top: 1px solid #8884; }
@@ -55,7 +59,13 @@
       <option value="24" selected>Sidste d&oslash;gn</option>
       <option value="168">Sidste uge</option>
       <option value="0">Alt</option>
+      <option value="day">Bestemt dag</option>
     </select>
+    <div id="dayNav">
+      <button id="dayPrev" title="Forrige dag">&#8592;</button>
+      <input type="date" id="dayPick">
+      <button id="dayNext" title="N&aelig;ste dag">&#8594;</button>
+    </div>
 
     <div class="row">
       <label><input type="checkbox" id="follow" checked style="width:auto"> F&oslash;lg</label>
@@ -115,6 +125,32 @@ function setStatus(ok, text) {
     `<span class="dot ${ok ? "on" : "off"}"></span><span class="muted">${text}</span>`;
 }
 
+let dayMode = false;   // true når "Bestemt dag" er valgt i #range
+
+const pad2 = (n) => String(n).padStart(2, "0");
+const todayStr = () => {
+  const d = new Date();
+  return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+};
+// Lokal kalenderdag (00:00 -> 00:00 dagen efter) omregnet til UTC-ISO til brug i since/until.
+function dayRangeOf(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0);
+  const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+  return { since: start.toISOString(), until: end.toISOString() };
+}
+function currentRange() {
+  if (dayMode) return dayRangeOf(el("dayPick").value || todayStr());
+  const hours = Number(el("range").value);
+  return hours ? { since: new Date(Date.now() - hours * 3600e3).toISOString() } : {};
+}
+function inRange(iso, rng) {
+  const t = new Date(iso).getTime();
+  if (rng.since && t < new Date(rng.since).getTime()) return false;
+  if (rng.until && t >= new Date(rng.until).getTime()) return false;
+  return true;
+}
+
 function redraw() {
   const latlngs = points.map((p) => [p.lat, p.lon]);
   track.setLatLngs(latlngs);
@@ -127,7 +163,15 @@ function redraw() {
   }
 
   const last = points[points.length - 1];
-  if (!last) return;
+  if (!last) {
+    if (curMarker) { map.removeLayer(curMarker); curMarker = null; }
+    if (curCircle) { map.removeLayer(curCircle); curCircle = null; }
+    el("s-age").textContent = "–"; el("s-pos").textContent = "–"; el("s-acc").textContent = "–";
+    el("s-spd").textContent = "–"; el("s-alt").textContent = "–"; el("s-bat").textContent = "–";
+    el("s-cnt").textContent = "0";
+    setStatus(false, "ingen positioner i dette tidsrum");
+    return;
+  }
 
   const ll = [last.lat, last.lon];
   if (!curMarker) {
@@ -154,12 +198,6 @@ function fitTrack() {
   if (points.length) map.fitBounds(track.getBounds(), { padding: [40, 40] });
 }
 
-function sinceParam() {
-  const hours = Number(el("range").value);
-  if (!hours) return {};
-  return { since: new Date(Date.now() - hours * 3600e3).toISOString() };
-}
-
 async function loadDevices() {
   const r = await fetch("/api/devices" + q());
   if (!r.ok) { setStatus(false, "kan ikke hente enheder (" + r.status + ")"); return; }
@@ -181,38 +219,63 @@ async function loadDevices() {
 
 async function loadHistory() {
   if (!currentDevice) return;
-  const r = await fetch("/api/positions" + q({ device: currentDevice, limit: 50000, ...sinceParam() }));
+  const rng = currentRange();
+  const r = await fetch("/api/positions" + q({ device: currentDevice, limit: 50000, ...rng }));
   if (!r.ok) { setStatus(false, "kan ikke hente historik (" + r.status + ")"); return; }
   points = await r.json();
   redraw();
   fitTrack();
-  setStatus(true, el("live").checked ? "live" : "opdateret " + new Date().toLocaleTimeString("da-DK"));
+  if (points.length) {
+    const label = dayMode ? "dag " + el("dayPick").value
+      : (el("live").checked ? "live" : "opdateret " + new Date().toLocaleTimeString("da-DK"));
+    setStatus(true, label);
+  }
 }
 
 function connectWs() {
   if (ws) { try { ws.close(); } catch (e) {} }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws${q()}`);
-  ws.onopen = () => setStatus(true, "live");
+  ws.onopen = () => { if (points.length || !dayMode) setStatus(true, "live"); };
   ws.onclose = () => { setStatus(false, "afbrudt – prøver igen…"); if (el("live").checked) setTimeout(connectWs, 3000); };
   ws.onerror = () => ws.close();
   ws.onmessage = (ev) => {
     if (!el("live").checked) return;
     const m = JSON.parse(ev.data);
     if (m.type !== "position" || m.device_id !== currentDevice) return;
+    const rng = currentRange();
+    if (!inRange(m.ts, rng)) return;   // fx en tidligere dag valgt - ignorér nye live-fixes
     points.push(m);
-    // hold historik-vinduet nogenlunde i sync med valgt tidsrum
-    const hours = Number(el("range").value);
-    if (hours) {
-      const cutoff = Date.now() - hours * 3600e3;
+    if (rng.since) {
+      const cutoff = new Date(rng.since).getTime();
       points = points.filter((p) => new Date(p.ts).getTime() >= cutoff);
     }
     redraw();
   };
 }
 
+function setDayMode(on) {
+  dayMode = on;
+  el("dayNav").style.display = on ? "flex" : "none";
+  if (on && !el("dayPick").value) el("dayPick").value = todayStr();
+  updateDayNextDisabled();
+}
+function updateDayNextDisabled() {
+  el("dayNext").disabled = (el("dayPick").value || todayStr()) >= todayStr();
+}
+function shiftDay(delta) {
+  const [y, m, d] = (el("dayPick").value || todayStr()).split("-").map(Number);
+  const dt = new Date(y, m - 1, d + delta);
+  el("dayPick").value = dt.getFullYear() + "-" + pad2(dt.getMonth() + 1) + "-" + pad2(dt.getDate());
+  updateDayNextDisabled();
+  loadHistory();
+}
+
 el("device").addEventListener("change", (e) => { currentDevice = e.target.value; loadHistory(); });
-el("range").addEventListener("change", loadHistory);
+el("range").addEventListener("change", () => { setDayMode(el("range").value === "day"); loadHistory(); });
+el("dayPick").addEventListener("change", () => { updateDayNextDisabled(); loadHistory(); });
+el("dayPrev").addEventListener("click", () => shiftDay(-1));
+el("dayNext").addEventListener("click", () => shiftDay(1));
 el("refresh").addEventListener("click", async () => { await loadDevices(); await loadHistory(); });
 el("fit").addEventListener("click", fitTrack);
 el("live").addEventListener("change", (e) => {

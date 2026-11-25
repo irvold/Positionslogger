@@ -39,6 +39,7 @@ ved siden af blueprinten.
 | GET | `/position/api/latest?device=` | view | Seneste position (pr. enhed hvis `device` udelades) |
 | DELETE | `/position/api/positions?device=&before=` | ingest | Ryd historik |
 | GET | `/position/api/health` | — | Status + antal punkter |
+| GET | `/position/hub` | view | Kiosk-visning til Nest Hub / faste skærme — se `../nest-hub/README.md` |
 
 ## Android-appen
 

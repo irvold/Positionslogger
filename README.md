@@ -26,6 +26,7 @@ aktuel position + rute på et Leaflet-kort i browseren — med live-opdatering.
 |-----|---------|
 | `server/` | FastAPI-server (standalone), SQLite, Leaflet-kort med WebSocket-live. Kører på PC eller Pi. |
 | `raspberry-pi/` | Samme server som en Flask-**blueprint** til at sætte ind i en eksisterende Flask-app på en Raspberry Pi (poller i stedet for WebSocket). Se [`raspberry-pi/README.md`](raspberry-pi/README.md). |
+| `nest-hub/` | Tjeneste der viser kortet på en Google Nest Hub (kiosk via Cast) og læser beskeder op ved ankomst/afgang (geofence). Se [`nest-hub/README.md`](nest-hub/README.md). |
 | `android/` | Android Studio-projekt (Kotlin + Jetpack Compose): baggrunds-GPS, offline-kø, accuracy-gate, forbindelses-/VPN-tjek. |
 
 ## Kom hurtigt i gang
@@ -89,6 +90,7 @@ curl -X POST http://localhost:8000/api/positions \
 | GET | `/api/latest?device=` | `VIEW_TOKEN`\* | Seneste position (pr. enhed hvis `device` udelades). |
 | DELETE | `/api/positions?device=&before=` | `INGEST_TOKEN` | Ryd historik. |
 | GET | `/api/health` | — | Status + antal punkter. |
+| GET | `/hub` | `VIEW_TOKEN`\* | Kiosk-visning til Nest Hub / faste skærme (1024×600). Se `nest-hub/`. |
 | WS | `/ws` | `VIEW_TOKEN`\* | Live-strøm af nye positioner. |
 
 \* Kun håndhævet hvis `VIEW_TOKEN` er sat. Token gives som `?token=…` i URL/WebSocket.

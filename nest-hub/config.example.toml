@@ -1,0 +1,61 @@
+# Kopiér til config.toml og ret til.  (config.toml er i .gitignore - den kan indeholde dit view-token)
+
+[server]
+# Hvor tjenesten henter positioner. Kører den på samme Pi som serveren, er localhost fint -
+# hubben får automatisk Pi'ens rigtige IP i kiosk-URL'en.
+#   FastAPI-serveren (server/):          http://localhost:8000
+#   Flask-blueprinten (raspberry-pi/):   http://localhost:5000/position
+url = "http://localhost:8000"
+view_token = ""                     # kun hvis VIEW_TOKEN / POSITIONSLOGGER_VIEW_TOKEN er sat
+
+[hub]
+host = "172.29.3.173"               # hubbens IP (Indstillinger > Enhedsoplysninger > Tekniske oplysninger)
+# name = "Kontor"                   # ... eller navnet fra Google Home-appen (kræver mDNS på netværket)
+
+kiosk = true                        # hold /hub-siden på skærmen
+kiosk_hours = "07:00-22:00"         # kun i dette tidsrum - ellers får hubben lov at være ur/fotoramme. Tom = altid
+recast_delay = 60                   # sekunder hubben skal have været ledig før vi caster igen
+check_interval = 15                 # sekunder mellem tjek
+force = true                        # DashCast "force"-mode: nødvendigt når siden er http://. Sæt false ved https.
+# kiosk_url = "https://pi.tail1234.ts.net/hub"   # overstyr hvis hubben skal bruge en anden adresse
+
+[hub.kiosk_params]                  # ekstra parametre til /hub-siden (se toppen af server/static/hub.html)
+# device = "daniels-telefon"        # vis kun denne enhed
+theme = "auto"                      # auto | light | dark
+zoom = "15"
+track = "today"                     # today | antal timer | 0
+
+[tts]
+enabled = true
+lang = "da"
+port = 8765                         # hubben henter lydfilerne her - åbn porten i firewallen på Pi'en
+# base_url = "https://pi.tail1234.ts.net:8765"   # kun hvis hubben ikke vil afspille fra http://
+# volume = 0.6                      # fast lydstyrke under beskeder (0-1). Udelad = brug hubbens egen
+quiet_hours = "22:30-07:00"         # ingen oplæsning i dette tidsrum
+interrupt = false                   # true = afbryd musik/Gemini for at læse op
+max_age_min = 20                    # sig intet om positioner der er ældre end dette (fx offline-kø der tømmes)
+max_acc = 100                       # ignorér fixes med dårligere nøjagtighed (meter)
+hysteresis = 50                     # meter uden for radius før man regnes som "ude" igen (undgår flimmer)
+battery_low = 15                    # advar når batteriet når denne procent. 0 = slået fra
+battery_text = "{navn}s telefon har kun {bat} procent strøm"
+
+[names]                             # device_id = navn der bruges i beskeder og på skærmen
+"daniels-telefon" = "Daniel"
+
+# En [[zone]] pr. sted. Pladsholdere i teksterne: {navn} {zone} {tid}.
+# enter/leave = "" betyder: sig ingenting. devices = [...] begrænser zonen til bestemte enheder.
+[[zone]]
+name = "hjemme"
+lat = 55.6761
+lon = 12.5683
+radius = 150
+enter = "{navn} er kommet hjem"
+leave = "{navn} er taget hjemmefra"
+
+[[zone]]
+name = "arbejde"
+lat = 55.7000
+lon = 12.5500
+radius = 200
+enter = "{navn} er ankommet til arbejde klokken {tid}"
+leave = "{navn} har fri og er på vej hjem"

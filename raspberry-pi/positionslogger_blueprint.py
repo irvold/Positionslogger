@@ -4,7 +4,7 @@ import os
 import sqlite3
 import threading
 
-from flask import Blueprint, render_template_string, request, jsonify
+from flask import Blueprint, Response, render_template_string, request, jsonify
 
 # Opretter Blueprint i stedet for en selvstændig Flask-app
 positionslogger_blueprint = Blueprint('positionslogger_dashboard', __name__)
@@ -685,3 +685,288 @@ el("toggle").addEventListener("click", () => {
 @positionslogger_blueprint.route('/')
 def index():
 	return render_template_string(HTML_TEMPLATE)
+
+
+# ──────────────────────────────────────────────────────────
+#  HUB-VISNING (kiosk til Nest Hub / faste skærme)
+# ──────────────────────────────────────────────────────────
+# Kopi af server/static/hub.html - hold dem ens (nest-hub/test_nesthub.py tjekker det).
+# Sendes som rå tekst (ikke Jinja), og r-strengen bevarer backslashes i JavaScript'en.
+HUB_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Positionslogger &ndash; hub</title>
+<!--
+  Kiosk-visning til Google Nest Hub (1024x600) og andre faste skærme.
+  Ingen knapper - siden skal kunne læses på afstand og passer sig selv.
+
+  URL-parametre (alle valgfrie):
+    token=<VIEW_TOKEN>               hvis serveren kræver det
+    device=id1,id2                   vis kun disse enheder (standard: alle)
+    names=id1:Daniel,id2:Anna        visningsnavne
+    theme=auto|light|dark            auto = mørk kl. 20-07
+    zoom=15                          maks zoom
+    track=today|<timer>|0            hvor meget rute der tegnes (standard: i dag)
+    stale=15                         minutter før en position vises som gammel
+
+  Bruges både af server/ (FastAPI) og raspberry-pi/ (Flask-blueprint): API'et
+  findes relativt til siden, så /hub -> /api/... og /position/hub -> /position/api/...
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<style>
+  :root {
+    --bg: #f4f4f2; --card: rgba(255,255,255,.92); --text: #1c1c1e; --muted: #6b6b70;
+    --line: rgba(0,0,0,.08); --bad: #c62828; --tiles: none;
+  }
+  body.dark {
+    --bg: #101113; --card: rgba(24,25,28,.9); --text: #f2f2f3; --muted: #9a9aa2;
+    --line: rgba(255,255,255,.1); --bad: #ff6b6b;
+    --tiles: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+               font: 16px/1.25 system-ui, "Google Sans", Roboto, sans-serif; cursor: none; }
+  #map { position: absolute; inset: 0; background: var(--bg); }
+  .leaflet-tile-pane { filter: var(--tiles); }
+  .leaflet-control-attribution { font-size: 9px; opacity: .6; background: transparent !important; color: var(--muted); }
+  .leaflet-control-attribution a { color: inherit; }
+
+  #clock {
+    position: absolute; z-index: 1000; top: 2.2vh; left: 2vw; padding: 1vh 1.6vw;
+    background: var(--card); border-radius: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.18);
+  }
+  #clock .t { font-size: clamp(34px, 7.5vh, 64px); font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  #clock .d { font-size: clamp(13px, 2.7vh, 22px); color: var(--muted); }
+
+  #net {
+    position: absolute; z-index: 1000; top: 2.2vh; right: 2vw; display: none;
+    padding: .8vh 1.4vw; border-radius: 999px; background: var(--card); color: var(--bad);
+    font-size: clamp(13px, 2.6vh, 20px); font-weight: 600;
+  }
+
+  #cards {
+    position: absolute; z-index: 1000; left: 2vw; right: 2vw; bottom: 2.4vh;
+    display: flex; gap: 1.4vw; justify-content: center;
+  }
+  .card {
+    flex: 1 1 0; max-width: 46vw; min-width: 0; display: flex; align-items: center; gap: 1.4vw;
+    padding: 1.6vh 1.8vw; background: var(--card); border-radius: 20px;
+    box-shadow: 0 2px 14px rgba(0,0,0,.2);
+  }
+  .card .dot { flex: none; width: 2.6vh; height: 2.6vh; min-width: 14px; min-height: 14px; border-radius: 50%; }
+  .card .main { flex: 1; min-width: 0; }
+  .card .name { font-size: clamp(20px, 4.6vh, 38px); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .age  { font-size: clamp(14px, 3.2vh, 26px); color: var(--muted); white-space: nowrap; }
+  .card .side { text-align: right; font-size: clamp(14px, 3.1vh, 25px); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .card .side b { color: var(--text); font-weight: 600; }
+  .card.stale { opacity: .62; }
+  .card.stale .age { color: var(--bad); }
+  .card .low { color: var(--bad); }
+
+  #empty {
+    position: absolute; z-index: 1000; inset: 0; display: none; align-items: center; justify-content: center;
+    font-size: clamp(18px, 4vh, 32px); color: var(--muted);
+  }
+  .pin { border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.25), 0 2px 8px rgba(0,0,0,.35); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="clock"><div class="t" id="time">--:--</div><div class="d" id="date"></div></div>
+<div id="net">Ingen forbindelse til serveren</div>
+<div id="cards"></div>
+<div id="empty">Venter p&aring; positioner&hellip;</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+"use strict";
+const P = new URLSearchParams(location.search);
+const TOKEN = P.get("token") || "";
+const ONLY = (P.get("device") || "").split(",").map((s) => s.trim()).filter(Boolean);
+const NAMES = Object.fromEntries((P.get("names") || "").split(",").map((pair) => {
+  const i = pair.indexOf(":");
+  return i > 0 ? [pair.slice(0, i).trim(), pair.slice(i + 1).trim()] : null;
+}).filter(Boolean));
+const THEME = P.get("theme") || "auto";
+const MAX_ZOOM = Number(P.get("zoom")) || 15;
+const TRACK = P.get("track") || "today";
+const STALE_MIN = Number(P.get("stale")) || 15;
+const POLL_MS = 5000;
+const COLORS = ["#2563eb", "#e11d48", "#16a34a", "#d97706", "#7c3aed", "#0891b2"];
+
+// /hub -> "" og /position/hub -> "/position"
+const BASE = location.pathname.replace(/\/hub\/?$/, "");
+const api = (path, extra) => {
+  const p = new URLSearchParams(extra || {});
+  if (TOKEN) p.set("token", TOKEN);
+  const s = p.toString();
+  return BASE + path + (s ? "?" + s : "");
+};
+const el = (id) => document.getElementById(id);
+const pad2 = (n) => String(n).padStart(2, "0");
+const nameOf = (id) => NAMES[id] || id;
+
+// ------------------------------------------------------------------- kort
+const map = L.map("map", {
+  zoomControl: false, attributionControl: true, dragging: false, scrollWheelZoom: false,
+  doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false, zoomSnap: 0.25,
+}).setView([56.0, 10.5], 7);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "&copy; OpenStreetMap",
+}).addTo(map);
+
+const devices = new Map();   // id -> {color, marker, circle, track, last, card}
+let colorIdx = 0;
+
+function trackSince() {
+  if (TRACK === "0") return null;
+  if (TRACK === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+  const h = Number(TRACK);
+  return h > 0 ? new Date(Date.now() - h * 3600e3) : null;
+}
+
+function ensureDevice(id) {
+  let d = devices.get(id);
+  if (d) return d;
+  const color = COLORS[colorIdx++ % COLORS.length];
+  const icon = L.divIcon({ className: "", html: `<div class="pin" style="width:22px;height:22px;background:${color}"></div>`, iconSize: [22, 22], iconAnchor: [11, 11] });
+  d = {
+    color,
+    track: L.polyline([], { color, weight: 5, opacity: 0.75 }).addTo(map),
+    circle: L.circle([0, 0], { radius: 0, color, weight: 1, fillOpacity: 0.08, opacity: 0.4 }).addTo(map),
+    marker: L.marker([0, 0], { icon, keyboard: false, interactive: false }).addTo(map),
+    last: null,
+    card: document.createElement("div"),
+  };
+  d.card.className = "card";
+  d.card.innerHTML = `<div class="dot" style="background:${color}"></div>
+    <div class="main"><div class="name"></div><div class="age"></div></div>
+    <div class="side"><div class="spd"></div><div class="bat"></div></div>`;
+  d.card.querySelector(".name").textContent = nameOf(id);
+  el("cards").appendChild(d.card);
+  devices.set(id, d);
+  return d;
+}
+
+// ------------------------------------------------------------------- visning
+function fmtAge(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 90) return "lige nu";
+  if (s < 3600) return Math.round(s / 60) + " min siden";
+  const t = new Date(iso);
+  const hm = pad2(t.getHours()) + ":" + pad2(t.getMinutes());
+  if (s < 86400 && t.getDate() === new Date().getDate()) return "kl. " + hm;
+  return t.toLocaleDateString("da-DK", { day: "numeric", month: "short" }) + " kl. " + hm;
+}
+
+function renderCard(d) {
+  const p = d.last;
+  const ageS = (Date.now() - new Date(p.ts).getTime()) / 1000;
+  const stale = ageS > STALE_MIN * 60;
+  d.card.classList.toggle("stale", stale);
+  d.card.querySelector(".age").textContent = (stale ? "Sidst set " : "") + fmtAge(p.ts);
+  const kmh = p.spd != null && !stale ? p.spd * 3.6 : null;
+  d.card.querySelector(".spd").innerHTML = kmh != null && kmh >= 3 ? `<b>${kmh.toFixed(0)}</b> km/t` : "";
+  const bat = d.card.querySelector(".bat");
+  bat.innerHTML = p.bat != null ? `&#128267; <b>${p.bat}</b> %` : "";
+  bat.classList.toggle("low", p.bat != null && p.bat <= 15);
+}
+
+function frame() {
+  const pts = [...devices.values()].filter((d) => d.last).map((d) => [d.last.lat, d.last.lon]);
+  el("empty").style.display = pts.length ? "none" : "flex";
+  if (!pts.length) return;
+  // plads til ur foroven og kort forneden
+  const bottom = el("cards").offsetHeight + 40, top = el("clock").offsetHeight + 30;
+  map.fitBounds(L.latLngBounds(pts), {
+    paddingTopLeft: [60, top], paddingBottomRight: [60, bottom], maxZoom: MAX_ZOOM, animate: true,
+  });
+}
+
+function applyFix(p, { refit = true } = {}) {
+  const d = ensureDevice(p.device_id);
+  if (d.last && p.ts <= d.last.ts) return false;
+  d.last = p;
+  const ll = [p.lat, p.lon];
+  d.marker.setLatLng(ll);
+  d.circle.setLatLng(ll).setRadius(p.acc || 0);
+  const since = trackSince();
+  if (since && new Date(p.ts) >= since) d.track.addLatLng(ll);
+  renderCard(d);
+  if (refit) frame();
+  return true;
+}
+
+// ------------------------------------------------------------------- data
+async function getJson(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function loadTracks() {
+  const since = trackSince();
+  for (const [id, d] of devices) {
+    if (!since) { d.track.setLatLngs([]); continue; }
+    try {
+      const rows = await getJson(api("/api/positions", { device: id, since: since.toISOString(), limit: 20000 }));
+      d.track.setLatLngs(rows.map((r) => [r.lat, r.lon]));
+    } catch (e) { /* næste poll prøver igen */ }
+  }
+}
+
+async function poll() {
+  try {
+    let rows = await getJson(api("/api/latest"));
+    if (!Array.isArray(rows)) rows = [rows];
+    if (ONLY.length) rows = rows.filter((r) => ONLY.includes(r.device_id));
+    const isNew = rows.some((r) => !devices.has(r.device_id));
+    let changed = false;
+    for (const r of rows.sort((a, b) => a.ts.localeCompare(b.ts))) changed = applyFix(r, { refit: false }) || changed;
+    if (isNew) await loadTracks();
+    if (changed) frame();
+    for (const d of devices.values()) if (d.last) renderCard(d);
+    el("net").style.display = "none";
+  } catch (e) {
+    el("net").style.display = "block";
+  }
+}
+
+// ------------------------------------------------------------------- ur + tema
+function tick() {
+  const n = new Date();
+  el("time").textContent = pad2(n.getHours()) + ":" + pad2(n.getMinutes());
+  const dateTxt = n.toLocaleDateString("da-DK", { weekday: "long", day: "numeric", month: "long" });
+  el("date").textContent = dateTxt.charAt(0).toUpperCase() + dateTxt.slice(1);
+  const h = n.getHours();
+  const dark = THEME === "dark" || (THEME === "auto" && (h >= 20 || h < 7));
+  document.body.classList.toggle("dark", dark);
+}
+
+let lastDay = new Date().getDate();
+setInterval(() => {
+  tick();
+  if (new Date().getDate() !== lastDay) { lastDay = new Date().getDate(); loadTracks(); }
+}, 1000);
+tick();
+
+(async function start() {
+  await poll();
+  setInterval(poll, POLL_MS);
+  setInterval(loadTracks, 10 * 60e3);
+  // en fuld genindlæsning engang imellem holder hukommelsen nede på hubben
+  setTimeout(() => location.reload(), 6 * 3600e3);
+})();
+</script>
+</body>
+</html>
+"""
+
+
+@positionslogger_blueprint.route('/hub')
+def hub():
+	return Response(HUB_TEMPLATE, mimetype="text/html")

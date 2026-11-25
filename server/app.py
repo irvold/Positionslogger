@@ -363,6 +363,12 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/hub")
+def hub_page():
+    """Kiosk-visning til Nest Hub / faste skærme (se nest-hub/README.md)."""
+    return FileResponse(STATIC_DIR / "hub.html")
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

@@ -24,3 +24,8 @@ Thumbs.db
 # lokale test-artefakter
 server/*.log
 *.test-token.txt
+
+# Nest Hub-tjenesten
+nest-hub/config.toml
+nest-hub/nesthub_state.json
+nest-hub/tts_cache/
